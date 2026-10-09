@@ -1,0 +1,9 @@
+App(
+    appid="flipper_sense",
+    name="Sense Node",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="flipper_sense_app",
+    requires=["gui"],
+    stack_size=4 * 1024,
+    fap_category="GPIO",
+)
