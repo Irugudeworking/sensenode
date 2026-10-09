@@ -1,0 +1,9 @@
+# ESP-IDF generated files; sdkconfig can contain a local access-point MAC.
+esp32/build/
+esp32/sdkconfig
+esp32/sdkconfig.old
+esp32/managed_components/
+
+# Local IDE/build outputs.
+flipper_fap/.vscode/
+flipper_fap/dist/debug/
