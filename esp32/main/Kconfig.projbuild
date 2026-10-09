@@ -1,0 +1,30 @@
+menu "Flipper Sense Node"
+
+config SENSE_UART_TX_GPIO
+    int "ESP32 UART0 TX GPIO (to Flipper RX, pin 14)"
+    range 0 39
+    default 1
+
+config SENSE_UART_RX_GPIO
+    int "ESP32 UART0 RX GPIO (to Flipper TX, pin 13)"
+    range 0 39
+    default 3
+
+config SENSE_WIFI_CHANNEL
+    int "Authorized CSI transmitter/AP channel (2.4 GHz)"
+    range 1 14
+    default 6
+
+config SENSE_PEER_MAC
+    string "Authorized CSI transmitter/AP BSSID (MAC)"
+    default "1A:00:00:00:00:00"
+    help
+        CSI frames are accepted only from this MAC address. Set this to a
+        transmitter or access point you own or are authorized to operate.
+
+config SENSE_CALIBRATION_FRAMES
+    int "Empty-room baseline frame count"
+    range 50 1000
+    default 200
+
+endmenu
