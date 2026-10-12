@@ -131,6 +131,8 @@ Controls:
 - **Presence** is a thresholded activity estimate derived from that deviation. A zero can mean no movement or too few matching frames; check Signal as well.
 - **Calibrating** means the receiver is learning a baseline from accepted CSI frames. If it never finishes, check the channel, BSSID, traffic source, and wiring.
 
+The current status line is `SENSE,1,armed,calibrating,presence,motion,quality,baseline_frames,baseline_target,raw_frames,matched_frames`. During calibration, `raw_frames` counts CSI frames received from any transmitter and `matched_frames` counts frames from the configured source. The Flipper screen shows `No Wi-Fi CSI frames` when raw traffic is absent and `MAC/channel mismatch` when traffic exists but the configured source address or channel is wrong.
+
 The signal path is based on common CSI sensing approaches, including the open-source [RuView project](https://github.com/ruvnet/RuView) and published Wi-Fi sensing research such as [Person-in-WiFi](https://arxiv.org/abs/1904.00276). This small single-receiver implementation is not equivalent to those systems' multi-radio calibration and inference pipelines.
 
 ## Troubleshooting
@@ -161,7 +163,7 @@ Re-enter downloader mode by holding BOOT while tapping EN/RST, then release BOOT
 
 ## Verification and known limits
 
-The code was compiled locally with ESP-IDF 5.5.1 for `esp32` and uFBT against Flipper API 87.1. A classic ESP32-WROOM-family chip was identified and an image was written through Flipper USB-UART Bridge with esptool SHA verification. On the connected Flipper, the FAP launched and remained running after OK, Left, and Right inputs. The latest serial diagnostic reported zero received bytes from the attached ESP32. Live sensing is therefore not yet verified on this assembled hardware; check ESP boot and wiring before interpreting any presence score.
+The code was compiled locally with ESP-IDF 5.5.1 for `esp32` and uFBT against Flipper API 87.1. A classic ESP32-WROOM-family chip was identified and an image was written through Flipper USB-UART Bridge with esptool SHA verification. The latest revision moves CSI processing out of the Wi-Fi callback, uses a stable variance baseline, and reports raw and matched frame counts. Live sensing still requires flashing this revised ESP32 image and checking the assembled hardware.
 
 No automated room-sensing accuracy evaluation is included. The calculated scores are heuristics; they should not be used for emergency response, access control, or decisions about a person's identity or activities.
 
