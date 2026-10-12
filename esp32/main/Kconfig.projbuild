@@ -25,6 +25,6 @@ config SENSE_PEER_MAC
 config SENSE_CALIBRATION_FRAMES
     int "Empty-room baseline frame count"
     range 50 1000
-    default 200
+    default 50
 
 endmenu
