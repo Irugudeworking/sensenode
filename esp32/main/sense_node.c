@@ -7,6 +7,7 @@
  * raw CSI, scans networks, identifies people, or sends data over a network.
  */
 #include <ctype.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -19,6 +20,7 @@
 #include "esp_mac.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
@@ -26,26 +28,30 @@
 /* ESP32-WROOM backpacks expose UART0 (GPIO1/3) through Flipper pins 13/14. */
 #define SENSE_UART UART_NUM_0
 #define SENSE_BAUD 115200
-#define STATUS_PERIOD_MS 250
-#define FRAME_WINDOW_MS 1000
+#define STATUS_PERIOD_MS 1000
+#define CSI_QUEUE_LENGTH 64
 
 typedef struct {
-    volatile bool armed;
-    volatile bool calibrating;
-    volatile uint32_t frames_total;
-    volatile uint32_t calibration_frames;
-    volatile float baseline;
-    volatile float baseline_noise;
-    volatile float last_magnitude;
-    volatile float motion_ema;
+    bool armed;
+    bool calibrating;
+    uint32_t calibration_frames;
+    float baseline;
+    float calibration_m2;
+    float baseline_noise;
+    float motion_ema;
 } sense_state_t;
 
 static sense_state_t s_state = {
     .armed = true,
     .calibrating = true,
-    .baseline_noise = 1.0f,
+    .baseline_noise = 0.5f,
 };
 static uint8_t s_peer_mac[6];
+static QueueHandle_t s_csi_queue;
+static volatile uint32_t s_csi_seen_total;
+static volatile uint32_t s_csi_matched_total;
+static uint32_t s_raw_frames_per_second;
+static uint32_t s_matched_frames_per_second;
 
 static bool parse_mac(const char* text, uint8_t out[6]) {
     unsigned value[6];
@@ -67,8 +73,10 @@ static uint8_t clamp_percent(float value) {
 /* This callback is run by the Wi-Fi task. Keep it bounded and allocation-free. */
 static void csi_callback(void* context, wifi_csi_info_t* info) {
     (void)context;
-    if(!info || !info->buf || info->len < 4 || memcmp(info->mac, s_peer_mac, sizeof(s_peer_mac)) != 0)
-        return;
+    if(!info || !info->buf || info->len < 4) return;
+    s_csi_seen_total++;
+    if(memcmp(info->mac, s_peer_mac, sizeof(s_peer_mac)) != 0) return;
+    s_csi_matched_total++;
 
     /* ESP-IDF CSI represents each subcarrier as signed imaginary/real bytes. */
     uint32_t total = 0;
@@ -84,23 +92,29 @@ static void csi_callback(void* context, wifi_csi_info_t* info) {
     if(!count) return;
 
     const float magnitude = (float)total / (float)count;
-    s_state.last_magnitude = magnitude;
-    s_state.frames_total++;
+    if(s_csi_queue) xQueueSend(s_csi_queue, &magnitude, 0);
+}
 
+/* Only the control task changes the baseline, so CAL cannot race the Wi-Fi callback. */
+static void process_csi_sample(float magnitude) {
     if(s_state.calibrating) {
         const uint32_t n = ++s_state.calibration_frames;
         const float delta = magnitude - s_state.baseline;
         s_state.baseline += delta / (float)n;
-        const float absolute_delta = delta < 0.0f ? -delta : delta;
-        s_state.baseline_noise += (absolute_delta - s_state.baseline_noise) / (float)n;
+        s_state.calibration_m2 += delta * (magnitude - s_state.baseline);
         if(n >= CONFIG_SENSE_CALIBRATION_FRAMES) {
-            if(s_state.baseline_noise < 0.25f) s_state.baseline_noise = 0.25f;
+            s_state.baseline_noise = sqrtf(s_state.calibration_m2 / (float)(n - 1));
+            if(s_state.baseline_noise < 0.5f) s_state.baseline_noise = 0.5f;
             s_state.calibrating = false;
             ESP_LOGI(TAG, "empty-room baseline captured: %.2f +/- %.2f", (double)s_state.baseline, (double)s_state.baseline_noise);
         }
         return;
     }
 
+    if(!s_state.armed) {
+        s_state.motion_ema = 0.0f;
+        return;
+    }
     const float delta = magnitude - s_state.baseline;
     const float absolute_delta = delta < 0.0f ? -delta : delta;
     const float normalised = absolute_delta / s_state.baseline_noise;
@@ -147,32 +161,33 @@ static void uart_init(void) {
 }
 
 static void send_status(void) {
-    static uint32_t prior_frames = 0;
-    const uint32_t frames = s_state.frames_total;
-    const uint32_t delta_frames = frames - prior_frames;
-    prior_frames = frames;
-    const uint8_t quality = clamp_percent((float)delta_frames * (100.0f / 20.0f));
+    const uint8_t quality = clamp_percent((float)s_matched_frames_per_second * 5.0f);
     const uint8_t motion = clamp_percent(s_state.motion_ema * 12.0f);
     /* Presence here means RF activity above the calibrated empty-room noise floor. */
     const uint8_t presence = (s_state.armed && !s_state.calibrating && motion >= 18) ? motion : 0;
-    char message[64];
+    char message[96];
     int length = snprintf(
         message,
         sizeof(message),
-        "SENSE,1,%u,%u,%u,%u,%u\n",
+        "SENSE,1,%u,%u,%u,%u,%u,%lu,%u,%lu,%lu\n",
         s_state.armed ? 1U : 0U,
         s_state.calibrating ? 1U : 0U,
         presence,
         motion,
-        quality);
-    if(length > 0) uart_write_bytes(SENSE_UART, message, length);
+        quality,
+        (unsigned long)s_state.calibration_frames,
+        CONFIG_SENSE_CALIBRATION_FRAMES,
+        (unsigned long)s_raw_frames_per_second,
+        (unsigned long)s_matched_frames_per_second);
+    if(length > 0 && length < sizeof(message)) uart_write_bytes(SENSE_UART, message, length);
 }
 
 static void start_calibration(void) {
     s_state.calibrating = true;
     s_state.calibration_frames = 0;
     s_state.baseline = 0.0f;
-    s_state.baseline_noise = 1.0f;
+    s_state.calibration_m2 = 0.0f;
+    s_state.baseline_noise = 0.5f;
     s_state.motion_ema = 0.0f;
 }
 
@@ -180,9 +195,12 @@ static void control_task(void* ignored) {
     (void)ignored;
     char line[32] = {0};
     size_t used = 0;
+    uint32_t prior_seen = s_csi_seen_total;
+    uint32_t prior_matched = s_csi_matched_total;
+    TickType_t last_status = xTaskGetTickCount();
     while(true) {
         uint8_t byte;
-        if(uart_read_bytes(SENSE_UART, &byte, 1, pdMS_TO_TICKS(50)) == 1) {
+        if(uart_read_bytes(SENSE_UART, &byte, 1, pdMS_TO_TICKS(20)) == 1) {
             if(byte == '\n' || byte == '\r') {
                 line[used] = '\0';
                 if(strcmp(line, "CAL") == 0) start_calibration();
@@ -196,8 +214,19 @@ static void control_task(void* ignored) {
                 used = 0;
             }
         }
-        send_status();
-        vTaskDelay(pdMS_TO_TICKS(STATUS_PERIOD_MS));
+        float magnitude;
+        while(xQueueReceive(s_csi_queue, &magnitude, 0) == pdTRUE) process_csi_sample(magnitude);
+        TickType_t now = xTaskGetTickCount();
+        if((now - last_status) >= pdMS_TO_TICKS(STATUS_PERIOD_MS)) {
+            uint32_t seen = s_csi_seen_total;
+            uint32_t matched = s_csi_matched_total;
+            s_raw_frames_per_second = seen - prior_seen;
+            s_matched_frames_per_second = matched - prior_matched;
+            prior_seen = seen;
+            prior_matched = matched;
+            last_status = now;
+            send_status();
+        }
     }
 }
 
@@ -210,6 +239,11 @@ void app_main(void) {
     ESP_ERROR_CHECK(nvs);
     if(!parse_mac(CONFIG_SENSE_PEER_MAC, s_peer_mac)) {
         ESP_LOGE(TAG, "Invalid CONFIG_SENSE_PEER_MAC: %s", CONFIG_SENSE_PEER_MAC);
+        return;
+    }
+    s_csi_queue = xQueueCreate(CSI_QUEUE_LENGTH, sizeof(float));
+    if(!s_csi_queue) {
+        ESP_LOGE(TAG, "Could not allocate CSI sample queue");
         return;
     }
     uart_init();
