@@ -29,6 +29,10 @@ typedef struct {
   uint8_t motion;
   uint8_t quality;
   uint32_t rx_bytes;
+  uint16_t calibration_frames;
+  uint16_t calibration_target;
+  uint16_t raw_frames;
+  uint16_t matched_frames;
 } SenseModel;
 
 typedef struct {
@@ -74,8 +78,21 @@ static void sense_view_draw(Canvas *canvas, void *_model) {
     canvas_draw_str(canvas, 2, 28, "ESP32 not connected");
     canvas_draw_str(canvas, 2, 42, rx_text);
   } else if (model->calibrating) {
-    canvas_draw_str(canvas, 2, 28, "Calibrating room...");
-    canvas_draw_str(canvas, 2, 42, "Keep area empty");
+    char progress[32];
+    if (model->calibration_target) {
+      snprintf(progress, sizeof(progress), "Baseline %u/%u",
+               model->calibration_frames, model->calibration_target);
+    } else {
+      snprintf(progress, sizeof(progress), "Waiting for CSI");
+    }
+    canvas_draw_str(canvas, 2, 28, progress);
+    if (model->raw_frames == 0) {
+      canvas_draw_str(canvas, 2, 42, "No Wi-Fi CSI frames");
+    } else if (model->matched_frames == 0) {
+      canvas_draw_str(canvas, 2, 42, "MAC/channel mismatch");
+    } else {
+      canvas_draw_str(canvas, 2, 42, "Keep area empty");
+    }
   } else if (!model->armed) {
     canvas_draw_str(canvas, 2, 28, "Sensor paused");
     canvas_draw_str(canvas, 2, 42, "OK: start sensing");
@@ -91,8 +108,20 @@ static void sense_view_draw(Canvas *canvas, void *_model) {
 
 static void sense_set_status(SenseApp *app, const char *line) {
   unsigned online, armed, calibrating, presence, motion, quality;
-  if (sscanf(line, "SENSE,%u,%u,%u,%u,%u,%u", &online, &armed, &calibrating,
-             &presence, &motion, &quality) != 6) {
+  unsigned calibration_frames, calibration_target, raw_frames, matched_frames;
+  int parsed =
+      sscanf(line, "SENSE,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u", &online, &armed,
+             &calibrating, &presence, &motion, &quality, &calibration_frames,
+             &calibration_target, &raw_frames, &matched_frames);
+  if (parsed != 10) {
+    parsed = sscanf(line, "SENSE,%u,%u,%u,%u,%u,%u", &online, &armed,
+                    &calibrating, &presence, &motion, &quality);
+    calibration_frames = 0;
+    calibration_target = 0;
+    raw_frames = 0;
+    matched_frames = 0;
+  }
+  if (parsed != 10 && parsed != 6) {
     return;
   }
   with_view_model(
@@ -104,6 +133,16 @@ static void sense_set_status(SenseApp *app, const char *line) {
         model->presence = MIN(presence, 100U);
         model->motion = MIN(motion, 100U);
         model->quality = MIN(quality, 100U);
+        model->calibration_frames =
+            (uint16_t)(calibration_frames > 65535U ? 65535U
+                                                   : calibration_frames);
+        model->calibration_target =
+            (uint16_t)(calibration_target > 65535U ? 65535U
+                                                   : calibration_target);
+        model->raw_frames =
+            (uint16_t)(raw_frames > 65535U ? 65535U : raw_frames);
+        model->matched_frames =
+            (uint16_t)(matched_frames > 65535U ? 65535U : matched_frames);
         model->rx_bytes = app->rx_bytes;
       },
       true);
@@ -125,13 +164,14 @@ static int32_t sense_worker(void *context) {
     if (flags == (unsigned)FuriFlagErrorTimeout) {
       uint32_t now = furi_get_tick();
       with_view_model(
-          app->view, SenseModel * model,
-          { model->rx_bytes = app->rx_bytes; }, true);
+          app->view, SenseModel * model, { model->rx_bytes = app->rx_bytes; },
+          true);
       if ((now - app->last_status_tick) > furi_ms_to_ticks(3000)) {
         with_view_model(
             app->view, SenseModel * model, { model->online = false; }, true);
         if ((now - app->last_diagnostic_tick) >= furi_ms_to_ticks(5000)) {
-          FURI_LOG_W("Sense", "Waiting for ESP32 status on USART; RX bytes: %lu",
+          FURI_LOG_W("Sense",
+                     "Waiting for ESP32 status on USART; RX bytes: %lu",
                      (unsigned long)app->rx_bytes);
           app->last_diagnostic_tick = now;
         }
