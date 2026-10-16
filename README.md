@@ -1,5 +1,17 @@
 # Flipper Sense
 
+## Установка за 5 шагов (русский)
+
+**Нужны две части:** приложение для Flipper (`.fap`) и прошивка для подключённого ESP32. Один `.fap` без прошивки ESP32 не измеряет CSI. Проверенная плата определилась как **ESP32-D0WDQ6 / ESP32-WROOM**, а не ESP32-S3.
+
+1. Скачайте [готовое приложение `flipper_sense.fap`](https://github.com/Irugudeworking/sensenode/releases/latest/download/flipper_sense.fap) и через [qFlipper](https://docs.flipper.net/zero/qflipper) положите его в `SD Card/apps/GPIO/`.
+2. Узнайте **BSSID и канал именно 2.4 GHz** своей точки доступа. Для этой версии ESP32-прошивки нужно собрать локальный образ под выбранный BSSID; Wi-Fi пароль не нужен.
+3. Соберите ESP32-прошивку из папки `esp32/` с ESP-IDF 5.5.1, указав канал и BSSID в `idf.py menuconfig`.
+4. На Flipper откройте **USB-UART Bridge**, выберите USART 13/14 и 115200 бод. На ESP32 удерживайте **BOOT**, кратко нажмите **EN/RST**, через 1–2 секунды отпустите BOOT. Прошейте образ через Flipper-мост.
+5. Нажмите **EN/RST без BOOT**, закройте мост и откройте **Apps → GPIO → Sense Node**. Для CSI нужен активный 2.4‑GHz трафик на выбранном канале.
+
+**Полная инструкция с командами для Linux/Windows, проверкой прошивки и разбором ошибок:** [docs/INSTALL_RU.md](docs/INSTALL_RU.md). Ниже оставлена подробная англоязычная документация.
+
 Flipper Sense is a small, local room-activity experiment. An ESP32 listens for Wi-Fi Channel State Information (CSI) from one configured radio address and sends summary values to a Flipper Zero over UART. The Flipper displays signal-frame quality, motion deviation, and a thresholded activity estimate.
 
 This project does not make a camera-like image, identify people, count people, measure vital signs, or determine a person's location. CSI measurements are sensitive to the room, radio placement, channel, packet rate, and ordinary changes in the environment. Treat the display as an experiment, not a security alarm or a reliable occupancy detector.
